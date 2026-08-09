@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0] -- 2026-08-09
+
 ### Added
 
 - Initial release. GitHub Copilot provider sidecar for llm-proxy.
@@ -22,3 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - 401 retry: automatically re-exchanges the Copilot token and retries once on upstream 401.
 - `COPILOT_*` environment variables for direct binary invocation.
 - `scripts/e2e-test.sh` helper for end-to-end testing: builds and sideloads the plugin into an isolated temp dir, then drives `llm-proxy` against `dev/llm-proxy.hcl`. Supports `serve`, `login`, `logout`, `models`, and `smoke` subcommands.
+
+[Unreleased]: https://github.com/thelonelyghost/llm-proxy-provider-copilot/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/thelonelyghost/llm-proxy-provider-copilot/compare/v0.1.0...v0.1.0
