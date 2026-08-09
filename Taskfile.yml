@@ -1,0 +1,149 @@
+# yaml-language-server: $schema=https://taskfile.dev/schema.json
+version: "3"
+
+vars:
+  BINARY: llm-proxy-provider-copilot
+  PKG: github.com/thelonelyghost/llm-proxy-provider-copilot
+  COVER_THRESHOLD: 80
+
+env:
+  CGO_ENABLED: "0"
+
+tasks:
+  default:
+    desc: "Run lint, vet, and tests"
+    cmds:
+      - task: lint
+      - task: vet
+      - task: test
+
+  tools:install:
+    desc: "Install developer tooling (nilaway, govulncheck)"
+    cmds:
+      - go install go.uber.org/nilaway/cmd/nilaway@latest
+      - go install golang.org/x/vuln/cmd/govulncheck@latest
+
+  tidy:
+    desc: "Tidy go modules"
+    cmds:
+      - go mod tidy
+
+  build:
+    desc: "Build the binary for the current platform"
+    vars:
+      VERSION:
+        sh: jq -r .version manifest/{{.BINARY}}.manifest.json
+    cmds:
+      - mkdir -p bin
+      - go build -trimpath -ldflags="-s -w -X main.Version={{.VERSION}}" -o bin/{{.BINARY}} ./cmd/{{.BINARY}}
+
+  build:all:
+    desc: "Cross-compile for supported platforms and package each into a tar.gz with the manifest"
+    cmds:
+      - mkdir -p dist
+      - for: { var: PLATFORMS, split: " " }
+        cmd: |
+          IFS=/ read -r OS ARCH <<< "{{.ITEM}}"
+          EXT=""
+          if [ "$OS" = "windows" ]; then EXT=".exe"; fi
+          ARCHIVE="{{.BINARY}}_{{.VERSION}}_${OS}_${ARCH}"
+          STAGING="dist/${ARCHIVE}"
+          mkdir -p "${STAGING}"
+          GOOS=$OS GOARCH=$ARCH go build -trimpath -ldflags="-s -w -X main.Version={{.VERSION}}" \
+            -o "${STAGING}/{{.BINARY}}${EXT}" ./cmd/{{.BINARY}}
+          cp manifest/{{.BINARY}}.manifest.json "${STAGING}/"
+          tar -czf "dist/${ARCHIVE}.tar.gz" -C dist "${ARCHIVE}"
+          rm -rf "${STAGING}"
+    vars:
+      PLATFORMS: "linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+      VERSION:
+        sh: jq -r .version manifest/{{.BINARY}}.manifest.json
+
+  install:
+    desc: "Sideload this plugin to llm-proxy's cache"
+    deps: [build]
+    cmds:
+      - cmd: mkdir -p ~/.cache/llm-proxy/plugins/thelonelyghost/copilot/{{.VERSION}}/{{OS}}_{{ARCH}}
+      - cmd: install -m0755 ./bin/{{.BINARY}} ~/.cache/llm-proxy/plugins/thelonelyghost/copilot/{{.VERSION}}/{{OS}}_{{ARCH}}/
+      - cmd: install -m0644 ./manifest/{{.BINARY}}.manifest.json ~/.cache/llm-proxy/plugins/thelonelyghost/copilot/{{.VERSION}}/{{OS}}_{{ARCH}}/
+    vars:
+      VERSION:
+        sh: jq -r .version manifest/{{.BINARY}}.manifest.json
+
+  fmt:
+    desc: "Format Go source"
+    cmds:
+      - gofmt -s -w .
+
+  vet:
+    desc: "Run go vet"
+    cmds:
+      - go vet ./...
+
+  lint:
+    desc: "Run golangci-lint"
+    cmds:
+      - golangci-lint run ./...
+
+  vuln:
+    desc: "Run govulncheck"
+    cmds:
+      - govulncheck ./...
+
+  nilaway:
+    desc: "Run nilaway"
+    cmds:
+      - nilaway ./...
+
+  fuzz:
+    desc: "Run all fuzz targets against their seed corpus only (fast, CI-safe)"
+    cmds:
+      - task: fuzz:run
+        vars:
+          FUZZ_TIME: 1s
+
+  fuzz:run:
+    desc: "Run all fuzz targets for FUZZ_TIME (default 30s). Override with: task fuzz:run FUZZ_TIME=5m"
+    vars:
+      FUZZ_TIME: '{{default "30s" .FUZZ_TIME}}'
+    cmds:
+      - go test -run='^$' -fuzz=FuzzResponsesToChat -fuzztime={{.FUZZ_TIME}} ./internal/server/
+
+  test:
+    desc: "Run unit tests with coverage"
+    cmds:
+      - go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      - go tool cover -func=coverage.out | tail -n 1
+
+  test:cover:
+    desc: "Enforce minimum coverage threshold"
+    cmds:
+      - task: test
+      - |
+        pct=$(go tool cover -func=coverage.out | awk '/total:/ {print $3}' | tr -d '%')
+        awk -v p="$pct" -v t="{{.COVER_THRESHOLD}}" 'BEGIN { if (p+0 < t+0) { printf "coverage %s%% < threshold %s%%\n", p, t; exit 1 } else { printf "coverage %s%% >= threshold %s%%\n", p, t } }'
+
+  check:
+    desc: "Full pre-commit pipeline: fmt, vet, lint, nilaway, vuln, test:cover"
+    cmds:
+      - task: fmt
+      - task: vet
+      - task: lint
+      - task: nilaway
+      - task: vuln
+      - task: test:cover
+      - task: fuzz
+
+  release:
+    desc: "Tag the current commit with the manifest version and build all platform archives"
+    vars:
+      VERSION:
+        sh: jq -r .version manifest/{{.BINARY}}.manifest.json
+    cmds:
+      - git tag v{{.VERSION}}
+      - task: build:all
+
+  clean:
+    desc: "Remove build artifacts"
+    cmds:
+      - rm -rf bin dist coverage.out

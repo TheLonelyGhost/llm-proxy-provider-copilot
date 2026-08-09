@@ -1,0 +1,20 @@
+{
+  "name": "copilot",
+  "version": "0.1.0",
+  "protocol_version": 1,
+  "port_env_var": "LLM_PROXY_PLUGIN_PORT",
+  "endpoints": {
+    "health": "/healthz",
+    "reload": "/management/reload"
+  },
+  "tools": [
+    {
+      "name": "login",
+      "description": "Authenticate with GitHub Copilot via the device-code OAuth flow"
+    },
+    {
+      "name": "logout",
+      "description": "Remove any stored GitHub Copilot credentials"
+    }
+  ]
+}

@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+permissions:
+  contents: write   # required to create the GitHub Release and upload assets
+
+jobs:
+  release:
+    name: Build & publish release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Strip the leading "v" so the bare version is available everywhere.
+      - name: Derive version
+        id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "VERSION=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      # Sanity-check: the manifest version must match the pushed tag.
+      - name: Verify manifest version matches tag
+        run: |
+          MANIFEST_VERSION="$(jq -r '.version' manifest/llm-proxy-provider-copilot.manifest.json)"
+          TAG_VERSION="${{ steps.version.outputs.VERSION }}"
+          if [ "${MANIFEST_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::manifest version '${MANIFEST_VERSION}' does not match tag '${TAG_VERSION}'"
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Cross-compile for every supported platform and produce one tar.gz per
+      # target.  Archive layout must be:
+      #
+      #   llm-proxy-provider-copilot_<version>_<os>_<arch>.tar.gz
+      #     └── llm-proxy-provider-copilot[.exe]
+      #     └── llm-proxy-provider-copilot.manifest.json
+      #
+      # This matches exactly what llm-proxy's buildGitHubReleaseURL constructs
+      # and what downloadAndExtract expects to find inside the archive.
+      - name: Build & package all platforms
+        env:
+          BINARY: llm-proxy-provider-copilot
+          VERSION: ${{ steps.version.outputs.VERSION }}
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p dist
+          PLATFORMS="linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64"
+          for PLATFORM in ${PLATFORMS}; do
+            OS="${PLATFORM%/*}"
+            ARCH="${PLATFORM#*/}"
+            EXT=""
+            if [ "${OS}" = "windows" ]; then EXT=".exe"; fi
+
+            ARCHIVE="${BINARY}_${VERSION}_${OS}_${ARCH}"
+            STAGING="dist/${ARCHIVE}"
+            mkdir -p "${STAGING}"
+
+            GOOS="${OS}" GOARCH="${ARCH}" go build \
+              -trimpath \
+              -ldflags="-s -w -X main.Version=${VERSION}" \
+              -o "${STAGING}/${BINARY}${EXT}" \
+              ./cmd/${BINARY}
+
+            cp manifest/${BINARY}.manifest.json "${STAGING}/"
+
+            tar -czf "dist/${ARCHIVE}.tar.gz" -C dist "${ARCHIVE}"
+            rm -rf "${STAGING}"
+          done
+
+      - name: Create GitHub Release and upload archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create the release (mark as latest; not a pre-release).
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "Release ${GITHUB_REF_NAME}" \
+            --generate-notes \
+            dist/*.tar.gz
