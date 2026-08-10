@@ -139,5 +139,5 @@ Release v<NEW_VERSION> is committed and tagged locally.
 
 To publish, run:
 
-    git push origin main && git push origin --tags
+    git push origin main --tags
 ```
