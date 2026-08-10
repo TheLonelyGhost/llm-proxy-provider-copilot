@@ -80,6 +80,11 @@ tasks:
     cmds:
       - go vet ./...
 
+  tidy:
+    desc: "Run go mod tidy"
+    cmds:
+      - go mod tidy
+
   lint:
     desc: "Run golangci-lint"
     cmds:
@@ -128,6 +133,7 @@ tasks:
     cmds:
       - task: fmt
       - task: vet
+      - task: tidy
       - task: lint
       - task: nilaway
       - task: vuln
