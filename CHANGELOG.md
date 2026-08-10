@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-08-10
+
 ### Added
 
 - `--tool list-models` — lists upstream Copilot model IDs one per line without starting the proxy. Output is never filtered by the backend `models` allow-list; use it to discover available model IDs or verify credentials. Documented under **"Available models"** in the README.
@@ -32,5 +34,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `COPILOT_*` environment variables for direct binary invocation.
 - `scripts/e2e-test.sh` helper for end-to-end testing: builds and sideloads the plugin into an isolated temp dir, then drives `llm-proxy` against `dev/llm-proxy.hcl`. Supports `serve`, `login`, `logout`, `models`, and `smoke` subcommands.
 
-[Unreleased]: https://github.com/thelonelyghost/llm-proxy-provider-copilot/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/thelonelyghost/llm-proxy-provider-copilot/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/thelonelyghost/llm-proxy-provider-copilot/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/thelonelyghost/llm-proxy-provider-copilot/compare/v0.1.0...v0.1.0

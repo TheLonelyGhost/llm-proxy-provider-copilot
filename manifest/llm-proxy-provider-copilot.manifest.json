@@ -1,6 +1,6 @@
 {
   "name": "copilot",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "protocol_version": 1,
   "port_env_var": "LLM_PROXY_PLUGIN_PORT",
   "endpoints": {
