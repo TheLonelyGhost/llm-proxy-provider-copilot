@@ -83,8 +83,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Generate a SHA256SUMS file covering all release archives.
+          cd dist
+          sha256sum *.tar.gz > SHA256SUMS
+          cd ..
+
           # Create the release (mark as latest; not a pre-release).
           gh release create "${GITHUB_REF_NAME}" \
             --title "Release ${GITHUB_REF_NAME}" \
             --generate-notes \
-            dist/*.tar.gz
+            dist/*.tar.gz dist/SHA256SUMS

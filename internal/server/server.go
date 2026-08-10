@@ -206,6 +206,14 @@ func (s *Server) Handler() http.Handler {
 // Auth exposes the underlying Authenticator for tooling subcommands.
 func (s *Server) Auth() *auth.Authenticator { return s.auth }
 
+// ListModelsForTool fetches the upstream Copilot model catalogue without
+// applying the operator's configured allow-list. It is the backend for the
+// --tool list-models subcommand, which is a discovery path for operators and
+// must never be filtered (per the llm-proxy plugin contract).
+func (s *Server) ListModelsForTool(ctx context.Context) ([]string, error) {
+	return s.fetchUpstreamModels(ctx)
+}
+
 // Reload clears the in-memory Copilot token cache.
 func (s *Server) Reload() {
 	s.auth.Invalidate()

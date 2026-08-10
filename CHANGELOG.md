@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `--tool list-models` — lists upstream Copilot model IDs one per line without starting the proxy. Output is never filtered by the backend `models` allow-list; use it to discover available model IDs or verify credentials. Documented under **"Available models"** in the README.
+- `--tool budget` — reports Copilot quota and spend as JSON (`object`, `currency`, `max_budget`, `spend`, `remaining`, `unlimited`, `extras`). Always outputs valid JSON; errors are returned as `{"object":"error","error":"..."}` with a non-zero exit code so the result can be piped to `jq` unconditionally. Requires an active Copilot subscription; accounts without access receive a descriptive error identifying the plan and `access_type_sku`.
+- `LLM_PROXY_BACKEND_CONFIG` environment variable is now parsed in tooling mode. llm-proxy sets this JSON object before exec-ing the binary so the tool operates on the correct backend when multiple backends share the same plugin type. `COPILOT_*` variables continue to override individual fields. `LLM_PROXY_BACKEND_LABEL` is used as the backend name fallback when neither `LLM_PROXY_BACKEND_CONFIG` nor `COPILOT_NAME` provides one.
+- `SHA256SUMS` file is now generated and published with each GitHub release, listing SHA-256 checksums for all release archives.
+
 ## [0.1.0] -- 2026-08-09
 
 ### Added

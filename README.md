@@ -10,12 +10,13 @@ by the proxy, exposing the full OpenAI-compatible surface:
 - `POST /v1/responses` (translated through chat-completions)
 - `GET /v1/models`
 
-It also ships two tooling subcommands invoked via `llm-proxy plugin run`:
+It also ships tooling subcommands invoked via `llm-proxy plugin run`:
 
 | Tool     | Purpose                                           |
 |----------|---------------------------------------------------|
 | `login`  | Run the GitHub device-code OAuth flow             |
 | `logout` | Remove any stored credentials                     |
+| `budget` | Report quota and spend as JSON                    |
 
 > **You must have an active GitHub Copilot subscription** on the GitHub account
 > you authorise with. This project is not affiliated with GitHub or Microsoft.
@@ -30,6 +31,8 @@ It also ships two tooling subcommands invoked via `llm-proxy plugin run`:
 - [Configuration](#configuration)
   - [All HCL options](#all-hcl-options)
 - [Login](#login)
+- [Available models](#available-models)
+- [Budget](#budget)
 - [Headers sent upstream](#headers-sent-upstream)
 - [Responses API shim](#responses-api-shim)
 - [Environment variables](#environment-variables)
@@ -37,7 +40,7 @@ It also ships two tooling subcommands invoked via `llm-proxy plugin run`:
   - [Prerequisites](#e2e-prerequisites)
   - [Quick start](#e2e-quick-start)
   - [Subcommands](#e2e-subcommands)
-  - [Isolation](#e2e-isolation)
+  - [Isolation and credential persistence](#e2e-isolation)
 - [Building and releasing](#building-and-releasing)
 
 ---
@@ -160,6 +163,111 @@ llm-proxy plugin run copilot logout
 
 ---
 
+## <a id="available-models"></a>Available models
+
+To discover which model IDs are available to your Copilot credential — without
+starting the proxy:
+
+```sh
+llm-proxy plugin run copilot list-models
+```
+
+Output is one model ID per line, unfiltered by any backend allow-list:
+
+```
+claude-3.5-sonnet
+gpt-4o
+gpt-4o-mini
+o1
+o3-mini
+```
+
+This is useful for building or verifying a `models` allow-list in the backend
+block, or for confirming that credentials are working before starting the proxy.
+
+---
+
+## Budget
+
+The `budget` tool call fetches quota and spend data directly from GitHub's
+`/copilot_internal/user` endpoint using the stored GitHub OAuth token. No
+running proxy is required.
+
+```sh
+llm-proxy plugin run copilot budget
+```
+
+Output is a single JSON object on both success and failure. On success:
+
+```json
+{
+  "object": "usage.budget",
+  "currency": "premium_requests",
+  "max_budget": 300,
+  "spend": 42,
+  "remaining": 258,
+  "unlimited": false,
+  "extras": {
+    "copilot_plan": "pro_plus",
+    "login": "octocat",
+    "quota_reset_date": "2026-09-01",
+    "primary_source": "premium_interactions",
+    "snapshot_chat_entitlement": "1000",
+    "snapshot_chat_remaining": "800"
+  }
+}
+```
+
+On failure (e.g. no active subscription, network error, missing credentials):
+
+```json
+{
+  "object": "error",
+  "error": "no Copilot quota available for octocat (plan=\"individual\", access_type_sku=\"no_access\"): the account does not have an active Copilot subscription"
+}
+```
+
+The exit code is non-zero on failure. Stdout is always valid JSON so the output can be piped safely to `jq` regardless of outcome.
+
+```json
+{
+  "object": "usage.budget",
+  "currency": "premium_requests",
+  "max_budget": 300,
+  "spend": 42,
+  "remaining": 258,
+  "unlimited": false,
+  "extras": {
+    "copilot_plan": "pro_plus",
+    "login": "octocat",
+    "quota_reset_date": "2026-09-01",
+    "primary_source": "premium_interactions",
+    "snapshot_chat_entitlement": "1000",
+    "snapshot_chat_remaining": "800"
+  }
+}
+```
+
+| Field        | Description |
+|--------------|-------------|
+| `object`     | Always `"usage.budget"` |
+| `currency`   | `"premium_requests"` (Pro / Pro+ / Business / Enterprise) or `"interactions"` (older / Free plans) |
+| `max_budget` | Monthly entitlement ceiling (`0` when `unlimited` is `true`) |
+| `spend`      | Entitlement minus remaining, clamped at zero |
+| `remaining`  | Remaining quota this period |
+| `unlimited`  | `true` when the plan has no ceiling |
+| `extras`     | Additional plan metadata: plan name, login, reset date, per-category snapshots |
+
+The mapping precedence for the primary counter follows the upstream provider:
+1. `quota_snapshots.premium_interactions` — currency `premium_requests`
+2. `quota_snapshots.chat` — currency `interactions`
+3. `limited_user_quotas` — currency `interactions`, `max_budget` is `0` (ceiling unknown)
+
+All raw snapshot categories are also included in `extras` with the prefix
+`snapshot_<category>_`.
+
+---
+
 ## Headers sent upstream
 
 For each API call the proxy sets:
@@ -198,22 +306,38 @@ implements the endpoint as an in-proxy translation shim over
 
 ## Environment variables
 
-| Variable                     | Description                               | Default                          |
-|------------------------------|-------------------------------------------|----------------------------------|
-| `LLM_PROXY_PLUGIN_PORT`      | TCP port the sidecar binds on             | `9001`                           |
-| `COPILOT_NAME`               | Backend routing prefix                    | `copilot`                        |
-| `COPILOT_API_BASE`           | Upstream Copilot API base URL             | `https://api.githubcopilot.com`  |
-| `COPILOT_GITHUB_API_BASE`    | GitHub API base URL                       | `https://api.github.com`         |
-| `COPILOT_GITHUB_LOGIN_BASE`  | GitHub login base URL                     | `https://github.com`             |
-| `COPILOT_OAUTH_CLIENT_ID`    | OAuth app client ID                       | `Iv1.b507a08c87ecfe98`           |
-| `COPILOT_EDITOR_VERSION`     | `Editor-Version` header                   | `vscode/1.95.0`                  |
-| `COPILOT_EDITOR_PLUGIN_VERSION` | `Editor-Plugin-Version` header         | `copilot-chat/0.22.0`            |
-| `COPILOT_USER_AGENT`         | `User-Agent` header                       | `GitHubCopilotChat/0.22.0`       |
-| `COPILOT_INTEGRATION_ID`     | `Copilot-Integration-Id` header           | `vscode-chat`                    |
-| `COPILOT_REQUEST_TIMEOUT`    | Per-request timeout (e.g. `"60s"`)        | `60s`                            |
-| `COPILOT_MODELS`             | Comma-separated allow-list of model ids   | _(all allowed)_                  |
-| `LLM_PROXY_CACHE_DIR`        | Cache directory override                  | OS default                       |
-| `LLM_PROXY_CONFIG_DIR`       | Config directory override                 | OS default                       |
+### Set by llm-proxy (tooling mode)
+
+Before exec-ing the binary as a tool, llm-proxy sets these variables so the
+binary knows which backend instance it is operating for:
+
+| Variable                  | Description                                          |
+|---------------------------|------------------------------------------------------|
+| `LLM_PROXY_BACKEND_LABEL` | The `backend` block label (e.g. `copilot`)           |
+| `LLM_PROXY_BACKEND_TYPE`  | The plugin type name (e.g. `github-copilot`)         |
+| `LLM_PROXY_BACKEND_CONFIG`| JSON object with all backend attributes; `env()` references already evaluated |
+
+`LLM_PROXY_BACKEND_CONFIG` is the primary source of configuration in tooling
+mode. `COPILOT_*` variables override individual fields if set.
+
+### Set by the operator
+
+| Variable                        | Description                               | Default                          |
+|---------------------------------|-------------------------------------------|----------------------------------|
+| `LLM_PROXY_PLUGIN_PORT`         | TCP port the sidecar binds on             | `9001`                           |
+| `COPILOT_NAME`                  | Backend routing prefix                    | from `LLM_PROXY_BACKEND_LABEL` or `copilot` |
+| `COPILOT_API_BASE`              | Upstream Copilot API base URL             | `https://api.githubcopilot.com`  |
+| `COPILOT_GITHUB_API_BASE`       | GitHub API base URL                       | `https://api.github.com`         |
+| `COPILOT_GITHUB_LOGIN_BASE`     | GitHub login base URL                     | `https://github.com`             |
+| `COPILOT_OAUTH_CLIENT_ID`       | OAuth app client ID                       | `Iv1.b507a08c87ecfe98`           |
+| `COPILOT_EDITOR_VERSION`        | `Editor-Version` header                   | `vscode/1.95.0`                  |
+| `COPILOT_EDITOR_PLUGIN_VERSION` | `Editor-Plugin-Version` header            | `copilot-chat/0.22.0`            |
+| `COPILOT_USER_AGENT`            | `User-Agent` header                       | `GitHubCopilotChat/0.22.0`       |
+| `COPILOT_INTEGRATION_ID`        | `Copilot-Integration-Id` header           | `vscode-chat`                    |
+| `COPILOT_REQUEST_TIMEOUT`       | Per-request timeout (e.g. `"60s"`)        | `60s`                            |
+| `COPILOT_MODELS`                | Comma-separated allow-list of model ids   | _(all allowed)_                  |
+| `LLM_PROXY_CACHE_DIR`           | Cache directory override                  | OS default                       |
+| `LLM_PROXY_CONFIG_DIR`          | Config directory override                 | OS default                       |
 
 ---
 
@@ -233,14 +357,24 @@ without touching global config, plugin cache, or token files.
 
 #### <a id="e2e-quick-start"></a>Quick start
 
+Credentials are ephemeral by default (deleted when the script exits). To
+persist them across separate invocations, export `E2E_CREDS_DIR` first:
+
 ```sh
-# 1. Authenticate once (opens the GitHub device-code URL in your terminal).
+export E2E_CREDS_DIR=~/.local/share/llm-proxy-e2e
+```
+
+Then authenticate and run any subcommand:
+
+```sh
+# Authenticate once (prints a GitHub device-code URL).
 scripts/e2e-test.sh login
 
-# 2. Start the proxy (Ctrl-C to stop).
+# Start the proxy in the foreground (Ctrl-C to stop).
 scripts/e2e-test.sh serve
 
-# Or run a full smoke test (no foreground proxy needed):
+# Or run individual checks (each works in its own shell):
+scripts/e2e-test.sh budget
 scripts/e2e-test.sh smoke
 ```
 
@@ -249,32 +383,60 @@ scripts/e2e-test.sh smoke
 | Subcommand | Description |
 |------------|-------------|
 | `serve` (default) | Build, sideload, then start `llm-proxy` in the foreground. |
-| `login`  | Run the GitHub device-code OAuth flow; writes `github_token.json` into the isolated config dir. |
-| `logout` | Remove any stored credentials from the isolated dirs. |
+| `login`  | Run the GitHub device-code OAuth flow; writes `github_token.json` into the credential dir. |
+| `logout` | Remove any stored credentials. |
 | `models` | Start the proxy in the background, call `GET /v1/models`, then stop it. |
 | `smoke`  | Start the proxy in the background, send one `POST /v1/chat/completions` request, then stop it. |
+| `budget` | Invoke the budget tool call (no proxy needed), print the JSON quota/spend response. |
 
 Key environment variables for the script:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `E2E_CREDS_DIR` | — | Persistent directory for credentials (see below). |
 | `E2E_PORT` | `14980` | Proxy listen port. |
 | `E2E_LOG_LEVEL` | `info` | llm-proxy log level. |
 | `E2E_MODEL` | `gpt-4o` | Model id used by the smoke subcommand. |
 | `COPILOT_MODELS` | — | Comma-separated allow-list forwarded to the sidecar. |
 
-#### <a id="e2e-isolation"></a>Isolation
+#### <a id="e2e-isolation"></a>Isolation and credential persistence
 
-Every run creates a per-process temp tree that is deleted on exit:
+The script never touches your global `llm-proxy` config or token files.
+`LLM_PROXY_CONFIG` always points at `dev/llm-proxy.hcl` in this repo.
 
-| Variable | Value |
-|---|---|
-| `LLM_PROXY_CONFIG` | `dev/llm-proxy.hcl` |
-| `LLM_PROXY_CONFIG_DIR` | `$TMPDIR/llm-proxy-e2e-<pid>/config` |
-| `LLM_PROXY_CACHE_DIR` | `$TMPDIR/llm-proxy-e2e-<pid>/cache` |
+Where credentials and the plugin binary live depends on whether
+`E2E_CREDS_DIR` is set:
 
-The plugin binary is sideloaded from `bin/` into the temp cache dir. No
-global config or token files are read or written.
+| | `E2E_CREDS_DIR` unset | `E2E_CREDS_DIR` set |
+|---|---|---|
+| `LLM_PROXY_CONFIG_DIR` | `$TMPDIR/llm-proxy-e2e-<pid>/config` | `$E2E_CREDS_DIR/config` |
+| `LLM_PROXY_CACHE_DIR` | `$TMPDIR/llm-proxy-e2e-<pid>/cache` | `$E2E_CREDS_DIR/cache` |
+| Deleted on exit? | **Yes** | **No** |
+
+The plugin binary is sideloaded from `bin/` into `LLM_PROXY_CACHE_DIR/plugins/`
+on every run so a freshly built binary is always used.
+
+**Without `E2E_CREDS_DIR`** every subcommand is self-contained: tokens are
+written and deleted within a single invocation, which is fine if you run
+`serve` or `smoke` in one uninterrupted session.
+
+**With `E2E_CREDS_DIR`** a single `login` run is enough for the whole
+session — subsequent subcommands in separate shells share the same tokens:
+
+```sh
+export E2E_CREDS_DIR=~/.local/share/llm-proxy-e2e
+
+# Authenticate once.
+scripts/e2e-test.sh login
+
+# Any later invocation (separate shell, any time) reuses those credentials.
+scripts/e2e-test.sh budget
+scripts/e2e-test.sh smoke
+scripts/e2e-test.sh models
+
+# When you're done:
+scripts/e2e-test.sh logout
+```
 
 ---
 

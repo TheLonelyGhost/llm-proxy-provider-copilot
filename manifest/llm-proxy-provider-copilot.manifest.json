@@ -15,6 +15,14 @@
     {
       "name": "logout",
       "description": "Remove any stored GitHub Copilot credentials"
+    },
+    {
+      "name": "list-models",
+      "description": "List upstream Copilot models available to the configured credential"
+    },
+    {
+      "name": "budget",
+      "description": "Report GitHub Copilot quota and spend information as JSON"
     }
   ]
 }

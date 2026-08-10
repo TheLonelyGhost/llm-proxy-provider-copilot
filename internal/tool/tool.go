@@ -21,6 +21,8 @@ func NewRootCmd(out, errOut io.Writer, cfg *server.Config) *cobra.Command {
 	}
 	root.AddCommand(newLoginCmd(out, errOut, cfg))
 	root.AddCommand(newLogoutCmd(out, cfg))
+	root.AddCommand(newBudgetCmd(out, cfg))
+	root.AddCommand(newListModelsCmd(out, errOut, cfg))
 	return root
 }
 
@@ -129,6 +131,56 @@ func newLogoutCmd(out io.Writer, cfg *server.Config) *cobra.Command {
 			return nil
 		},
 	}
+}
+
+// --- list-models ---
+
+func newListModelsCmd(out, errOut io.Writer, cfg *server.Config) *cobra.Command {
+	var gitHubAPIBase string
+	cmd := &cobra.Command{
+		Use:   "list-models",
+		Short: "List upstream Copilot models available to the configured credential",
+		Long: "Queries the GitHub Copilot /models catalogue using the stored\n" +
+			"credentials and prints one model ID per line to stdout.\n\n" +
+			"This is a standalone discovery path: it does not start the proxy\n" +
+			"and is not filtered by any configured allow-list. Use it to learn\n" +
+			"which model IDs to place in a backend allow-list, or to verify\n" +
+			"that credentials are working.\n\n" +
+			"Exit codes:\n" +
+			"  0  model list written to stdout\n" +
+			"  1  authentication, network, or upstream error",
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolvedCfg := server.Config{}
+			if cfg != nil {
+				resolvedCfg = *cfg
+			}
+			if gitHubAPIBase != "" {
+				resolvedCfg.GitHubAPIBase = gitHubAPIBase
+			}
+			// list-models needs a server instance so it can call the upstream
+			// /models catalogue.  We give it a no-op name so New doesn't
+			// complain; the name is never used in this code path.
+			if resolvedCfg.Name == "" {
+				resolvedCfg.Name = "copilot"
+			}
+			srv, err := server.New(resolvedCfg, nil, nil)
+			if err != nil {
+				fmt.Fprintf(errOut, "error: init server: %v\n", err) //nolint:errcheck // best-effort stderr
+				return err
+			}
+			models, err := srv.ListModelsForTool(cmd.Context())
+			if err != nil {
+				fmt.Fprintf(errOut, "error: %v\n", err) //nolint:errcheck // best-effort stderr
+				return err
+			}
+			for _, m := range models {
+				fmt.Fprintln(out, m) //nolint:errcheck // best-effort stdout
+			}
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&gitHubAPIBase, "github-api-base", "", "GitHub API base URL")
+	return cmd
 }
 
 // openBrowserURL attempts to open url in the system default browser.

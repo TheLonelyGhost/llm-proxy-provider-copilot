@@ -96,3 +96,114 @@ func TestConfigFromEnv_Override(t *testing.T) {
 	}
 	_ = os.Getenv("COPILOT_NAME")
 }
+
+// TestConfigFromEnv_BackendConfig verifies that LLM_PROXY_BACKEND_CONFIG is
+// parsed and its values are applied before COPILOT_* overrides.
+func TestConfigFromEnv_BackendConfig(t *testing.T) {
+	// Clear any COPILOT_* overrides so the JSON config is the only source.
+	for _, key := range []string{
+		"COPILOT_NAME", "COPILOT_API_BASE", "COPILOT_GITHUB_API_BASE",
+		"COPILOT_GITHUB_LOGIN_BASE", "COPILOT_OAUTH_CLIENT_ID",
+		"COPILOT_EDITOR_VERSION", "COPILOT_EDITOR_PLUGIN_VERSION",
+		"COPILOT_USER_AGENT", "COPILOT_INTEGRATION_ID",
+		"COPILOT_REQUEST_TIMEOUT", "COPILOT_MODELS",
+		"LLM_PROXY_BACKEND_LABEL", "LLM_PROXY_BACKEND_TYPE",
+	} {
+		t.Setenv(key, "")
+	}
+
+	bcJSON := `{
+		"name": "work-copilot",
+		"type": "github-copilot",
+		"api_base": "https://api.example.com",
+		"github_api_base": "https://ghapi.example.com",
+		"oauth_client_id": "test-client-id",
+		"request_timeout": "30s",
+		"models": ["gpt-4o", "o3-mini"]
+	}`
+	t.Setenv("LLM_PROXY_BACKEND_CONFIG", bcJSON)
+
+	cfg := configFromEnv()
+
+	if cfg.Name != "work-copilot" {
+		t.Errorf("Name = %q, want %q", cfg.Name, "work-copilot")
+	}
+	if cfg.APIBase != "https://api.example.com" {
+		t.Errorf("APIBase = %q", cfg.APIBase)
+	}
+	if cfg.GitHubAPIBase != "https://ghapi.example.com" {
+		t.Errorf("GitHubAPIBase = %q", cfg.GitHubAPIBase)
+	}
+	if cfg.OAuthClientID != "test-client-id" {
+		t.Errorf("OAuthClientID = %q", cfg.OAuthClientID)
+	}
+	if cfg.RequestTimeout != "30s" {
+		t.Errorf("RequestTimeout = %q", cfg.RequestTimeout)
+	}
+	if len(cfg.Models) != 2 || cfg.Models[0] != "gpt-4o" || cfg.Models[1] != "o3-mini" {
+		t.Errorf("Models = %v", cfg.Models)
+	}
+}
+
+// TestConfigFromEnv_BackendConfig_CopilotOverrides verifies that explicit
+// COPILOT_* variables override values from LLM_PROXY_BACKEND_CONFIG.
+func TestConfigFromEnv_BackendConfig_CopilotOverrides(t *testing.T) {
+	for _, key := range []string{
+		"COPILOT_GITHUB_API_BASE", "COPILOT_GITHUB_LOGIN_BASE",
+		"COPILOT_OAUTH_CLIENT_ID", "COPILOT_EDITOR_VERSION",
+		"COPILOT_EDITOR_PLUGIN_VERSION", "COPILOT_USER_AGENT",
+		"COPILOT_INTEGRATION_ID", "COPILOT_REQUEST_TIMEOUT", "COPILOT_MODELS",
+		"LLM_PROXY_BACKEND_LABEL", "LLM_PROXY_BACKEND_TYPE",
+	} {
+		t.Setenv(key, "")
+	}
+
+	bcJSON := `{"name":"from-json","api_base":"https://json.example.com"}`
+	t.Setenv("LLM_PROXY_BACKEND_CONFIG", bcJSON)
+	t.Setenv("COPILOT_NAME", "from-env")
+	t.Setenv("COPILOT_API_BASE", "https://env.example.com")
+
+	cfg := configFromEnv()
+
+	if cfg.Name != "from-env" {
+		t.Errorf("Name = %q, want %q (COPILOT_NAME should override JSON)", cfg.Name, "from-env")
+	}
+	if cfg.APIBase != "https://env.example.com" {
+		t.Errorf("APIBase = %q, want %q (COPILOT_API_BASE should override JSON)", cfg.APIBase, "https://env.example.com")
+	}
+}
+
+// TestConfigFromEnv_BackendLabel_FallsBackToLabel verifies that
+// LLM_PROXY_BACKEND_LABEL is used as the name when neither
+// LLM_PROXY_BACKEND_CONFIG nor COPILOT_NAME provides one.
+func TestConfigFromEnv_BackendLabel_FallsBackToLabel(t *testing.T) {
+	for _, key := range []string{
+		"LLM_PROXY_BACKEND_CONFIG", "COPILOT_NAME",
+		"COPILOT_API_BASE", "COPILOT_MODELS",
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("LLM_PROXY_BACKEND_LABEL", "my-backend")
+
+	cfg := configFromEnv()
+	if cfg.Name != "my-backend" {
+		t.Errorf("Name = %q, want %q", cfg.Name, "my-backend")
+	}
+}
+
+// TestConfigFromEnv_BackendConfig_ModelsCommaSeparated verifies that the
+// models field in LLM_PROXY_BACKEND_CONFIG also accepts a comma-separated
+// string (in case the HCL serialiser emits it that way).
+func TestConfigFromEnv_BackendConfig_ModelsCommaSeparated(t *testing.T) {
+	for _, key := range []string{"COPILOT_NAME", "COPILOT_MODELS", "LLM_PROXY_BACKEND_LABEL"} {
+		t.Setenv(key, "")
+	}
+
+	bcJSON := `{"name":"copilot","models":"gpt-4o, o3-mini"}`
+	t.Setenv("LLM_PROXY_BACKEND_CONFIG", bcJSON)
+
+	cfg := configFromEnv()
+	if len(cfg.Models) != 2 {
+		t.Errorf("Models = %v, want 2 items from comma-separated string", cfg.Models)
+	}
+}

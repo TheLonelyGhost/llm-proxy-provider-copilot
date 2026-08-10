@@ -3,7 +3,7 @@
 # fully isolated from any global llm-proxy configuration and token cache.
 #
 # USAGE
-#   scripts/e2e-test.sh [serve|login|logout|models|smoke]
+#   scripts/e2e-test.sh [serve|login|logout|models|smoke|budget]
 #
 #   serve    (default) Build the plugin, sideload it, then start llm-proxy.
 #            Ctrl-C to stop.  The proxy listens on 127.0.0.1:14980.
@@ -21,10 +21,25 @@
 #            request to POST /v1/chat/completions (model: gpt-4o), print the
 #            response, then stop it.  Requires real credentials.
 #
+#   budget   Invoke the budget tool call directly (no proxy required) and
+#            print the JSON quota/spend response.  Requires real credentials
+#            (run `login` first).  Uses the stored GitHub OAuth token to call
+#            GET /copilot_internal/user and maps the result to the llm-proxy
+#            /v1/usage/budget JSON shape.
+#
 # ENVIRONMENT VARIABLES
 #   Set these before invoking the script (or export them in your shell):
 #
 #   Optional:
+#   E2E_CREDS_DIR       Persistent directory that holds login credentials
+#                       (github_token.json and copilot_token.json) across
+#                       script invocations.  When set, login writes tokens
+#                       here and all other subcommands read from here instead
+#                       of the ephemeral per-run temp dir.  The directory is
+#                       NOT removed on exit, so a single `login` run is
+#                       enough for the whole session.
+#                       Default: unset (credentials live only for the
+#                       lifetime of the current invocation).
 #   COPILOT_MODELS      Comma-separated model allow-list passed to the plugin
 #                       sidecar (default: "gpt-4o").  This env var is read by
 #                       the sidecar directly; the HCL config already sets
@@ -35,10 +50,13 @@
 #
 # ISOLATION GUARANTEES
 #   - LLM_PROXY_CONFIG      → dev/llm-proxy.hcl  (this repo, not ~/.config)
-#   - LLM_PROXY_CONFIG_DIR  → $TMPDIR/llm-proxy-e2e-<pid>/config
-#   - LLM_PROXY_CACHE_DIR   → $TMPDIR/llm-proxy-e2e-<pid>/cache
-#   The plugin binary is sideloaded from bin/ into the temp cache dir.
-#   No global config, no global plugin cache, no shared token files.
+#   - LLM_PROXY_CONFIG_DIR  → $E2E_CREDS_DIR/config  (when E2E_CREDS_DIR is set)
+#                             $TMPDIR/llm-proxy-e2e-<pid>/config  (otherwise)
+#   - LLM_PROXY_CACHE_DIR   → $E2E_CREDS_DIR/cache   (when E2E_CREDS_DIR is set)
+#                             $TMPDIR/llm-proxy-e2e-<pid>/cache   (otherwise)
+#   The plugin binary is sideloaded from bin/ into LLM_PROXY_CACHE_DIR/plugins/
+#   on every run so a freshly built binary is always used.
+#   No global config and no global plugin cache are used.
 #
 # PREREQUISITES
 #   - llm-proxy must be on $PATH.
@@ -71,20 +89,38 @@ PROXY_BASE="http://127.0.0.1:${E2E_PORT}"
 # Subcommand (default: serve)
 SUBCOMMAND="${1:-serve}"
 
+# Model used for smoke test.
+E2E_MODEL="${E2E_MODEL:-gpt-4o}"
+
 # ---------------------------------------------------------------------------
-# Isolated temp dirs – scoped to this process so parallel runs don't collide.
+# Directories
+#
+# E2E_TMP    – ephemeral, PID-scoped scratch space.  Deleted on exit.
+#
+# Credential dirs – where github_token.json / copilot_token.json live,
+# and where the sideloaded plugin binary is installed:
+#   * When E2E_CREDS_DIR is set: use $E2E_CREDS_DIR/{config,cache}.  These
+#     are NOT deleted on exit, so credentials and the cached binary persist
+#     across invocations.
+#   * Otherwise: use subdirs of E2E_TMP (deleted on exit; credentials and
+#     binary are ephemeral, fine for a single uninterrupted serve/smoke run).
 # ---------------------------------------------------------------------------
 E2E_TMP="${TMPDIR:-/tmp}/llm-proxy-e2e-$$"
-E2E_CONFIG_DIR="${E2E_TMP}/config"
-E2E_CACHE_DIR="${E2E_TMP}/cache"
+
+if [[ -n "${E2E_CREDS_DIR:-}" ]]; then
+  E2E_CONFIG_DIR="${E2E_CREDS_DIR}/config"
+  E2E_CACHE_DIR="${E2E_CREDS_DIR}/cache"
+else
+  E2E_CONFIG_DIR="${E2E_TMP}/config"
+  E2E_CACHE_DIR="${E2E_TMP}/cache"
+fi
 
 export LLM_PROXY_CONFIG="${DEV_CONFIG}"
 export LLM_PROXY_CONFIG_DIR="${E2E_CONFIG_DIR}"
 export LLM_PROXY_CACHE_DIR="${E2E_CACHE_DIR}"
 
-# The sidecar itself also reads LLM_PROXY_CONFIG_DIR for the GitHub token and
-# LLM_PROXY_CACHE_DIR for the short-lived Copilot token cache.
-# No additional env vars are needed; the sidecar inherits the process env.
+# The sidecar inherits these env vars so it reads/writes tokens in the same
+# directories as the script.  No additional wiring is required.
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -106,7 +142,8 @@ cleanup() {
     kill "${PROXY_PID}" 2>/dev/null || true
     wait "${PROXY_PID}" 2>/dev/null || true
   fi
-  # Remove the temp tree created by this run.
+  # Remove the ephemeral temp tree for this run.  Never remove E2E_CREDS_DIR:
+  # it is operator-managed and intended to persist across invocations.
   if [[ -d "${E2E_TMP}" ]]; then
     rm -rf "${E2E_TMP}"
     log "Removed temp dir ${E2E_TMP}"
@@ -138,6 +175,11 @@ build_plugin() {
 
 # ---------------------------------------------------------------------------
 # Step: sideload binary + manifest into the isolated plugin cache.
+#
+# When E2E_CREDS_DIR is set, the plugin binary is written into
+# E2E_CACHE_DIR (which lives under E2E_CREDS_DIR) so that llm-proxy finds
+# it there across invocations.  When E2E_CREDS_DIR is not set, E2E_CACHE_DIR
+# is already under the ephemeral E2E_TMP, so behaviour is unchanged.
 # ---------------------------------------------------------------------------
 sideload_plugin() {
   local os_arch
@@ -158,12 +200,15 @@ sideload_plugin() {
 }
 
 # ---------------------------------------------------------------------------
-# Step: create isolated config and cache dirs.
+# Step: create config and cache dirs.
 # ---------------------------------------------------------------------------
 init_dirs() {
   mkdir -p "${E2E_CONFIG_DIR}" "${E2E_CACHE_DIR}"
-  log "Isolated config dir : ${E2E_CONFIG_DIR}"
-  log "Isolated cache dir  : ${E2E_CACHE_DIR}"
+  if [[ -n "${E2E_CREDS_DIR:-}" ]]; then
+    log "Persistent creds dir: ${E2E_CREDS_DIR}"
+  fi
+  log "Config dir (tokens) : ${E2E_CONFIG_DIR}"
+  log "Cache dir (tokens)  : ${E2E_CACHE_DIR}"
   log "Using config file   : ${DEV_CONFIG}"
 }
 
@@ -216,8 +261,7 @@ cmd_serve() {
   log ""
 
   # Run in the foreground.  Do NOT exec here: keeping the shell process alive
-  # ensures the EXIT trap fires on Ctrl-C or any exit path, which removes
-  # E2E_TMP regardless of how the proxy terminates.
+  # ensures the EXIT trap fires on Ctrl-C or any exit path.
   llm-proxy serve \
     --config    "${DEV_CONFIG}" \
     --port      "${E2E_PORT}" \
@@ -235,10 +279,21 @@ cmd_login() {
 
   log "Running GitHub Copilot device-code login flow..."
   log "  Token will be written to: ${E2E_CONFIG_DIR}/github_token.json"
-  log "  After login completes, run: scripts/e2e-test.sh serve"
+  if [[ -n "${E2E_CREDS_DIR:-}" ]]; then
+    log "  Credentials will persist across invocations (E2E_CREDS_DIR is set)."
+    log "  After login completes, re-export E2E_CREDS_DIR and run any subcommand."
+  else
+    log "  WARNING: E2E_CREDS_DIR is not set.  Token is ephemeral and will be"
+    log "  deleted when this script exits.  Export E2E_CREDS_DIR to a persistent"
+    log "  directory before running login if you want credentials to survive:"
+    log "    export E2E_CREDS_DIR=~/.local/share/llm-proxy-e2e"
+    log "    $0 login"
+    log "    $0 budget   # works in a separate shell if E2E_CREDS_DIR is exported"
+  fi
   log ""
 
   llm-proxy plugin run --config "${DEV_CONFIG}" copilot login
+  log "Login complete.  Token written to: ${E2E_CONFIG_DIR}/github_token.json"
 }
 
 # ---------------------------------------------------------------------------
@@ -317,6 +372,35 @@ cmd_smoke() {
 }
 
 # ---------------------------------------------------------------------------
+# Subcommand: budget (quota / spend report via tool call)
+# ---------------------------------------------------------------------------
+cmd_budget() {
+  require_cmd llm-proxy
+  require_cmd jq
+  init_dirs
+  build_plugin
+  sideload_plugin
+
+  log "Running budget tool call (no proxy required)..."
+  log "  Config dir: ${E2E_CONFIG_DIR}"
+  log ""
+
+  local output
+  output="$(llm-proxy plugin run --config "${DEV_CONFIG}" copilot budget)"
+
+  echo "${output}" | jq .
+
+  # Basic sanity: the JSON must have an "object" key.
+  local obj
+  obj="$(echo "${output}" | jq -r '.object // empty')"
+  if [[ "${obj}" != "usage.budget" ]]; then
+    die "budget tool call returned unexpected object: ${obj:-<empty>}"
+  fi
+
+  log "budget check passed"
+}
+
+# ---------------------------------------------------------------------------
 # Dispatch
 # ---------------------------------------------------------------------------
 case "${SUBCOMMAND}" in
@@ -325,10 +409,11 @@ case "${SUBCOMMAND}" in
   logout)  cmd_logout  ;;
   models)  cmd_models  ;;
   smoke)   cmd_smoke   ;;
+  budget)  cmd_budget  ;;
   *)
     err "Unknown subcommand: ${SUBCOMMAND}"
     echo ""
-    echo "Usage: $0 [serve|login|logout|models|smoke]"
+    echo "Usage: $0 [serve|login|logout|models|smoke|budget]"
     exit 1
     ;;
 esac
